@@ -2,6 +2,8 @@
   "name": "orchardcore",
   "private": true,
   "scripts": {
+    "start": "dotnet ./src/OrchardCore.Cms.Web/bin/Debug/net9.0/OrchardCore.Cms.Web.dll",
+    "compile": "dotnet build && npm i",
     "build": "gulp build",
     "rebuild": "gulp rebuild",
     "watch": " gulp watch",
