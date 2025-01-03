@@ -32,4 +32,7 @@ public class SetupContext
     /// Gets additional key/value info.
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = [];
+#nullable enable
+    public LogObject? LogObject { get; set; }
+#nullable disable
 }

@@ -111,9 +111,11 @@ public class SetupService : ISetupService
 
     private async Task<string> SetupInternalAsync(SetupContext context)
     {
+        context.LogObject.Content.Add("SetupInternalAsync", "SetupService.cs");
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Running setup for tenant '{TenantName}'.", context.ShellSettings?.Name);
+            context.LogObject.Content.Add("Line 117, Running setup for tenant", context.ShellSettings?.Name);
         }
 
         // Features to enable for Setup.
@@ -129,10 +131,12 @@ public class SetupService : ISetupService
 
         // Set shell state to "Initializing" so that subsequent HTTP requests are responded to with "Service Unavailable" while Orchard is setting up.
         context.ShellSettings.AsInitializing();
+        context.LogObject.Content.Add("Line 133, setting ShellSettings.settings.State to TenantState.Initializing", "Initializing");
 
         // Due to database collation we normalize the userId to lower invariant.
         // During setup there are no users so we do not need to check unicity.
         var adminUserId = _setupUserIdGenerator.GenerateUniqueId().ToLowerInvariant();
+        context.LogObject.Content.Add("Line 138, Generating adminUserId", adminUserId);
         context.Properties[SetupConstants.AdminUserId] = adminUserId;
 
         var recipeEnvironmentFeature = new RecipeEnvironmentFeature();
@@ -151,20 +155,24 @@ public class SetupService : ISetupService
         _httpContextAccessor.HttpContext.Features.Set(recipeEnvironmentFeature);
 
         var shellSettings = new ShellSettings(context.ShellSettings).ConfigureDatabaseTableOptions();
+        context.LogObject.Content.Add("Line 158, Creating new ShellSettings from context.ShellSettings, and assinging tables to it", "ShellSettings");
         if (string.IsNullOrWhiteSpace(shellSettings["DatabaseProvider"]))
         {
             shellSettings["DatabaseProvider"] = context.Properties.TryGetValue(SetupConstants.DatabaseProvider, out var databaseProvider) ? databaseProvider?.ToString() : string.Empty;
             shellSettings["ConnectionString"] = context.Properties.TryGetValue(SetupConstants.DatabaseConnectionString, out var databaseConnectionString) ? databaseConnectionString?.ToString() : string.Empty;
             shellSettings["TablePrefix"] = context.Properties.TryGetValue(SetupConstants.DatabaseTablePrefix, out var databaseTablePrefix) ? databaseTablePrefix?.ToString() : string.Empty;
             shellSettings["Schema"] = context.Properties.TryGetValue(SetupConstants.DatabaseSchema, out var schema) ? schema?.ToString() : null;
+            context.LogObject.Content.Add("Line 159, DatabaseProvider is present, we populate shellSettings with DatabaseProvider, ConnectionString, TablePrefix and Schema", "-");
         }
 
         if (shellSettings["DatabaseProvider"] == DatabaseProviderValue.Sqlite && string.IsNullOrEmpty(shellSettings["DatabaseName"]))
         {
             shellSettings["DatabaseName"] = context.Properties.TryGetValue(SetupConstants.DatabaseName, out var dbName) ? dbName?.ToString() : "OrchardCore.db";
+            context.LogObject.Content.Add("Line 168, DatabaseProvider is Sqlite and no DatabaseName was provided, we set the DatabaseName to", shellSettings["DatabaseName"]);
         }
 
         var validationContext = new DbConnectionValidatorContext(shellSettings);
+        context.LogObject.Content.Add("Line 174, new DbConnectionValidatorContext from shellSettings", "-");
         switch (await _dbConnectionValidator.ValidateAsync(validationContext))
         {
             case DbConnectionValidatorResult.NoProvider:
@@ -197,6 +205,7 @@ public class SetupService : ISetupService
         {
             Features = context.EnabledFeatures.Select(id => new ShellFeature(id)).ToList()
         };
+        context.LogObject.Content.Add("Line 204, new ShellDescriptor from ShellFeatures", "-");
 
         string executionId;
 
@@ -223,11 +232,13 @@ public class SetupService : ISetupService
             }
 
             executionId = Guid.NewGuid().ToString("n");
+            context.LogObject.Content.Add("Line 234, new executionId", executionId);
 
             var recipeExecutor = shellContext.ServiceProvider.GetRequiredService<IRecipeExecutor>();
             try
             {
                 await recipeExecutor.ExecuteAsync(executionId, context.Recipe, context.Properties, _applicationLifetime.ApplicationStopping);
+                context.LogObject.Content.Add("Line 240, Executing recipe", context.Recipe.Author);
             }
             catch (RecipeExecutionException e)
             {
@@ -256,6 +267,8 @@ public class SetupService : ISetupService
                 await handlers.InvokeAsync((handler) => handler.FailedAsync(context), _logger);
             }
         });
+        context.LogObject.Content.Add("Line 258, Reloaded shell context", "-");
+
 
         if (context.Errors.Count > 0)
         {
@@ -273,17 +286,19 @@ public class SetupService : ISetupService
             {
                 SqliteConnection.ClearPool(sqliteConnection);
             }
+            context.LogObject.Content.Add("Line 280, DatabaseProvider is Sqlite, we will close the sqllite connection", "-");
         }
 
         // Update the shell state.
         await _shellHost.UpdateShellSettingsAsync(shellSettings.AsRunning());
-
+        context.LogObject.Content.Add("Line 293, Update the shell state to Running", "Running");
         await (await _shellHost.GetScopeAsync(shellSettings.Name)).UsingAsync(async scope =>
         {
             var handlers = scope.ServiceProvider.GetServices<ISetupEventHandler>();
             await handlers.InvokeAsync((handler) => handler.SucceededAsync(), _logger);
         });
-
+        context.LogObject.Content.Add("Line 299, Setup succeeded", "-");
+        context.LogObject.Content.Add("END", "SetupService.cs");
         return executionId;
     }
 }

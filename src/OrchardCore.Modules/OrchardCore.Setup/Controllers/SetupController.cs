@@ -13,6 +13,7 @@ using OrchardCore.Modules;
 using OrchardCore.Recipes.Models;
 using OrchardCore.Setup.Services;
 using OrchardCore.Setup.ViewModels;
+using System.Diagnostics;
 
 namespace OrchardCore.Setup.Controllers;
 
@@ -89,13 +90,20 @@ public sealed class SetupController : Controller
     [HttpPost, ActionName("Index")]
     public async Task<ActionResult> IndexPOST(SetupViewModel model)
     {
+        var logObject = new LogObject(){
+            Content = new Dictionary<string, string>()
+        };
+        var watch = Stopwatch.StartNew();
+        logObject.Content.Add("Action", "IndexPOST");
+        logObject.Content.Add("Line 98, SetupController.cs, Secret", model.Secret);
         if (!await ShouldProceedWithTokenAsync(model.Secret))
         {
             return StatusCode(404);
         }
-
+        logObject.Content.Add("Line 103, SetupController.cs, _databaseProviders", string.Join(", ", _databaseProviders.Select(x => x.Value)));
         model.DatabaseProviders = _databaseProviders;
         model.Recipes = await _setupService.GetSetupRecipesAsync();
+        logObject.Content.Add("Line 106, SetupController.cs, Recipes", string.Join(", ", model.Recipes.Select(x => x.Name)));
 
         if (string.IsNullOrEmpty(model.Password))
         {
@@ -151,7 +159,8 @@ public sealed class SetupController : Controller
                 { SetupConstants.AdminEmail, model.Email },
                 { SetupConstants.AdminPassword, model.Password },
                 { SetupConstants.SiteTimeZone, model.SiteTimeZone },
-            }
+            },
+            LogObject = logObject
         };
 
         if (!string.IsNullOrEmpty(_shellSettings["ConnectionString"]))
@@ -161,6 +170,10 @@ public sealed class SetupController : Controller
             setupContext.Properties[SetupConstants.DatabaseConnectionString] = _shellSettings["ConnectionString"];
             setupContext.Properties[SetupConstants.DatabaseTablePrefix] = _shellSettings["TablePrefix"];
             setupContext.Properties[SetupConstants.DatabaseSchema] = _shellSettings["Schema"];
+            setupContext.LogObject.Content.Add("Line 169, DatabaseProvider", _shellSettings["DatabaseProvider"]);
+            setupContext.LogObject.Content.Add("Line 170, ConnectionString", _shellSettings["ConnectionString"]);
+            setupContext.LogObject.Content.Add("Line 171, TablePrefix", _shellSettings["TablePrefix"]);
+            setupContext.LogObject.Content.Add("Line 172, Schema", _shellSettings["Schema"]);
         }
         else
         {
@@ -168,9 +181,14 @@ public sealed class SetupController : Controller
             setupContext.Properties[SetupConstants.DatabaseConnectionString] = model.ConnectionString;
             setupContext.Properties[SetupConstants.DatabaseTablePrefix] = model.TablePrefix;
             setupContext.Properties[SetupConstants.DatabaseSchema] = model.Schema;
+            setupContext.LogObject.Content.Add("Line 180, DatabaseProvider", model.DatabaseProvider);
+            setupContext.LogObject.Content.Add("Line 181, ConnectionString", model.ConnectionString);
+            setupContext.LogObject.Content.Add("Line 182, TablePrefix", model.TablePrefix);
+            setupContext.LogObject.Content.Add("Line 183, Schema", model.Schema);
         }
 
         var executionId = await _setupService.SetupAsync(setupContext);
+        setupContext.LogObject.Content.Add("Line 190, ExecutionId", executionId);
 
         // Check if any Setup component failed (e.g., database connection validation)
         if (setupContext.Errors.Count > 0)
@@ -182,7 +200,11 @@ public sealed class SetupController : Controller
 
             return View(model);
         }
-
+        watch.Stop();
+        var elapsedMs = watch.ElapsedMilliseconds;
+        setupContext.LogObject.Content.Add("Line 204, ElapsedMs", elapsedMs.ToString());
+        // Below we will print the LogObject to std
+        setupContext.LogObject.Content.Keys.ToList().ForEach(key => Console.WriteLine($"{key}: {setupContext.LogObject.Content[key]}"));
         return Redirect("~/");
     }
 
