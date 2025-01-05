@@ -1,85 +1,73 @@
-# Orchard Core
+# Orchard Core Performance Improvement
 
-Orchard Core is an open-source, modular, multi-tenant application framework and CMS for ASP.NET Core.
+Here is what I did in a sequence of steps:
 
-Orchard Core consists of two distinct projects:
+1. I ran the dotnet profiler called dotTrace, and got the following results:
 
-- __Orchard Core Framework__: An application framework for building modular, multi-tenant applications on ASP.NET Core.
-- __Orchard Core CMS__: A Web Content Management System (CMS) built on top of the Orchard Core Framework.
+<img src="./images/1.JPG"></img>
+<img src="./images/2.JPG"></img>
 
-[![BSD-3-Clause License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
-[![Documentation](https://readthedocs.org/projects/orchardcore/badge/)](https://docs.orchardcore.net/)
-[![Gurubase](https://img.shields.io/badge/Gurubase-Ask%20Orchard%20Core%20Guru-006BFF)](https://gurubase.io/g/orchard-core)
-[![Crowdin](https://badges.crowdin.net/orchard-core/localized.svg)](https://crowdin.com/project/orchard-core)
-[![Discord](https://img.shields.io/discord/551136772243980291?color=%237289DA&label=OrchardCore&logo=discord&logoColor=white&style=flat-square)](https://orchardcore.net/discord)
+From the results, I found that the incoming HTTP request takes approximately 13 seconds. Additionaly, it was suggested that one of the slower tasks occurs when the `Parallel.ForEach` loop is executed within the `EnsureInitialized` function (see `ExtensionManager.cs`).
 
-## Build Status
+2. My first approach was to read up on parallelization, and I found some useful [resources](https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/how-to-speed-up-small-loop-bodies) that stated the following:
 
-Stable (`release/2.1`):
+> When a Parallel.For loop has a small body, it might perform more slowly than the equivalent sequential loop, such as the for loop in C# and the For loop in Visual Basic. Slower performance is caused by the overhead involved in partitioning the data and the cost of invoking a delegate on each loop iteration. To address such scenarios, the Partitioner class provides the Partitioner.Create method, which enables you to provide a sequential loop for the delegate body, so that the delegate is invoked only once per partition, instead of once per iteration.
 
-[![Build status](https://github.com/OrchardCMS/OrchardCore/actions/workflows/release_ci.yml/badge.svg)](https://github.com/OrchardCMS/OrchardCore/actions?query=workflow%3A%22Release+-+CI%22)
-[![NuGet](https://img.shields.io/nuget/v/OrchardCore.Application.Cms.Targets.svg)](https://www.nuget.org/packages/OrchardCore.Application.Cms.Targets)
+3. So in order to speed up the `Parallel.For` I used partitioning, and changed the code to:
 
-Nightly (`main`):
+```C#
+var partitioner = Partitioner.Create(modules);
+            ParallelOptions options = new()
+            {
+                MaxDegreeOfParallelism = System.Environment.ProcessorCount
+            };
+            // Load all extensions in parallel.
+            Parallel.ForEach(partitioner, options, (module, cancellationToken) =>
+            {
+                if (!module.ModuleInfo.Exists)
+                {
+                    return;
+                }
 
-[![Build status](https://github.com/OrchardCMS/OrchardCore/actions/workflows/preview_ci.yml/badge.svg)](https://github.com/OrchardCMS/OrchardCore/actions?query=workflow%3A%22Preview+-+CI%22)
-[![Cloudsmith](https://api-prd.cloudsmith.io/badges/version/orchardcore/preview/nuget/OrchardCore.Application.Cms.Targets/latest/x/?render=true&badge_token=gAAAAABey9hKFD_C-ZIpLvayS3HDsIjIorQluDs53KjIdlxoDz6Ntt1TzvMNJp7a_UWvQbsfN5nS7_0IbxCyqHZsjhmZP6cBkKforo-NqwrH5-E6QCrJ3D8%3D)](https://cloudsmith.io/~orchardcore/repos/preview/packages/detail/nuget/OrchardCore.Application.Cms.Targets/latest/)
+                var manifestInfo = new ManifestInfo(module.ModuleInfo);
+                var extensionInfo = new ExtensionInfo(module.SubPath, manifestInfo, (manifestInfo, extensionInfo) =>
+                {
+                    return featuresProvider.GetFeatures(extensionInfo, manifestInfo);
+                });
 
-## Project Status: v2.1.3
+                var entry = new ExtensionEntry
+                {
+                    ExtensionInfo = extensionInfo,
+                    Assembly = module.Assembly,
+                    ExportedTypes = module.Assembly.ExportedTypes
+                };
 
-The software is production-ready, and capable of serving large mission-critical applications as well, and we're not aware of any fundamental bugs or missing features we deem crucial. Orchard Core continues to evolve, with each version bringing new improvements, and keeping up with the cutting-edge of .NET.
+                loadedExtensions.TryAdd(module.Name, entry);
+            });
+```
 
-Check out [the Reference of Built-in Modules](https://docs.orchardcore.net/en/latest/reference/) to see what kind of features Orchard Core provides built-in.
+and got the following results:
+<img src="./images/s1p.JPG"></img>
 
-See the [issue milestones](https://github.com/OrchardCMS/OrchardCore/milestones) for information on what we have planned for the next releases and what are the priorities.
+4. However, this change did not provide the performance boost I was expecting (incomin http-request takes approximately 9 seconds), and it didn’t feel like sufficient evidence that performance had actually improved. I began to consider that I might be approaching the problem too narrowly and should take a broader perspective. When is the `EnsureInitialized` function being called? What does it do? What other functions depend on it?
 
-## Getting Started and Documentation
+I realized that the `ExtensionManager` is added as a service, meaning it is injected via dependency injection and is created when the application initializes. I also noticed that the `EnsureInitialized` function is responsible for initializing values within the `ExtensionManager`. This led me to think it might be a good idea to trigger the function within the constructor of `ExtensionManager`, so the initialization process is handled during dependency injection. I updated the constructor accordingly:
 
-The documentation can be accessed under <https://docs.orchardcore.net/>. See the homepage for an overview, and [the getting started docs](https://docs.orchardcore.net/en/latest/getting-started/) on how to start building apps with Orchard Core. If you'd just like to test drive Orchard Core as a user, check out [Test drive Orchard Core](https://docs.orchardcore.net/en/latest/getting-started/test-drive-orchard-core/).
+```C#
+public ExtensionManager(
+    IServiceProvider serviceProvider,
+    ILogger<ExtensionManager> logger)
+{
+    _serviceProvider = serviceProvider;
+    L = logger;
+    EnsureInitialized();
+}
+```
 
-## Help and Support
+and got the following results from the profiler:
+<img src="./images/s1.JPG"></img>
 
-Need assistance with Orchard Core? We've got you covered! Here are several ways to connect with our community for support:
+The new results from the profiler looked more promising, with the time for an incoming HTTP request now reduced to approximately 3 seconds.
 
-- **Search for Answers:** Use the [Gurubase AI model](https://gurubase.io/g/orchard-core) to find answers to your questions quickly.
-- **Report Bugs or Suggest Features:** If you've encountered a bug or have an idea for a new feature, please open an issue in our [issue tracker](https://github.com/OrchardCMS/OrchardCore/issues).
-- **Ask Questions or Get Feedback:** For guidance on specific tasks or to receive feedback on your code, feel free to start a [discussion](https://github.com/OrchardCMS/OrchardCore/discussions) with the community.
-- **Join the Conversation:** Connect with other Orchard Core users in real-time on our [Discord server](https://orchardcore.net/discord) to chat and share ideas.
-
-We're here to help you succeed with Orchard Core!
-
-## Get in Touch
-
-- [X (Twitter)](https://twitter.com/orchardcms)
-- [LinkedIn](https://orchardcore.net/linkedin)
-- [Facebook](https://www.facebook.com/OrchardCore)
-- [Discord](https://orchardcore.net/discord)
-- Please report security issues privately, via email, to [contact@orchardcore.net](mailto:contact@orchardcore.net).
-
-### Local Communities
-
-中文资源
-
-[![Orchard Core CN 中文讨论组](https://docs.orchardcore.net/en/latest/assets/images/orchard-core-cn-community-logo.png)](https://shang.qq.com/wpa/qunwpa?idkey=48721591a71ee7586316604a7a4ee99d26fd977c6120370a06585085a5936f62)
-
-## Contributing
-
-It's great that you're thinking about contributing to Orchard Core! You'd join [our wonderful community of contributors](https://docs.orchardcore.net/en/latest/community/contributors/).
-
-Check out the docs [on contributing to Orchard Core](https://docs.orchardcore.net/en/latest/contributing/).
-
-## Preview Package Feed
-
-[![Hosted By: Cloudsmith](https://img.shields.io/badge/OSS%20hosting%20by-cloudsmith-blue?logo=cloudsmith&style=for-the-badge)](https://cloudsmith.com)
-
-NuGet package repository hosting for the preview feed is graciously provided by [Cloudsmith](https://cloudsmith.com). Check out [the docs on using the preview package feed](https://docs.orchardcore.net/en/latest/getting-started/preview-package-source/).
-
-Cloudsmith is the only fully hosted, cloud-native, universal package management solution, that enables your organization to create, store, and share packages in any format, to any place, with total confidence.
-
-## Code of Conduct
-
-See [our Code of Conduct](https://docs.orchardcore.net/en/latest/contributing/#code-of-conduct).
-
-## .NET Foundation
-
-This project is supported by the [.NET Foundation](http://www.dotnetfoundation.org).
+## Obstacles and Things that can be improved further
+There was a lot of obstacles that I hade to go through when working on this case, and there are some additional things that I wanted to improve, these are things that I would like to discuss more about during the technical interview discission.

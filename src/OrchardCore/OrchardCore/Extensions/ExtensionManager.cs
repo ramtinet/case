@@ -36,6 +36,7 @@ public sealed class ExtensionManager : IExtensionManager
     {
         _serviceProvider = serviceProvider;
         L = logger;
+        EnsureInitialized();
     }
 
     public ILogger L { get; set; }
@@ -166,9 +167,13 @@ public sealed class ExtensionManager : IExtensionManager
 
             var modules = applicationContext.Application.Modules;
             var loadedExtensions = new ConcurrentDictionary<string, ExtensionEntry>();
-
+            var partitioner = Partitioner.Create(modules);
+            ParallelOptions options = new()
+            {
+                MaxDegreeOfParallelism = System.Environment.ProcessorCount
+            };
             // Load all extensions in parallel.
-            Parallel.ForEach(modules, (module, cancellationToken) =>
+            Parallel.ForEach(partitioner, options, (module, cancellationToken) =>
             {
                 if (!module.ModuleInfo.Exists)
                 {
